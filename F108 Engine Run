@@ -1,11 +1,27 @@
+
+/*
+F108 / CFM56-2B Turbofan engine run calculator
+***CALCULATOR FOR REFERENCE USE ONLY***
+
+Takes temperature and pressure as inputs, and returns the relevant engine RPM targets
+
+Equations derived from charts in T.O. 1C-135-2-4-1-1
+
+Features BIG NUMBERS that span 2x3 characters on the LCD for easier reading.
+Big font inspired by projects like http://www.instructables.com/id/Custom-Large-Font-For-16x2-LCDs/
+...but written from scratch to hopefully learn something.
+
+*/
+
+#include <FastIO.h>
+#include <LiquidCrystal.h>
 #include <TimerOne.h>
 #include <ClickEncoder.h>
-#include <LiquidCrystal.h>
-
-LiquidCrystal lcd(7,6,5,4,3,2);
 
 
-byte a[8]={
+
+//---------------------------------------------Custom Characters for LCD big numbers--------------------------------------
+byte a[8]={  //top row segment
   B11111,
   B11111,
   B11111,
@@ -16,7 +32,7 @@ byte a[8]={
   B00000
 };
 
-byte b[8]={
+byte b[8]={  //Bottom row segment
   B00000,
   B00000,
   B00000,
@@ -27,7 +43,7 @@ byte b[8]={
   B11111
 };
 
-byte c[8]={
+byte c[8]={ //Top center segment
   B11111,
   B11111,
   B00000,
@@ -38,7 +54,7 @@ byte c[8]={
   B11111
 };
 
-byte d[8] ={
+byte d[8] ={  //Solid block
   B11111,
   B11111,
   B11111,
@@ -49,7 +65,7 @@ byte d[8] ={
   B11111
 };
 
-byte e[8]={
+byte e[8]={  //Space
   B00000,
   B00000,
   B00000,
@@ -61,7 +77,7 @@ byte e[8]={
 
 };
 
-byte f[8]={
+byte f[8]={   //Decimal point
   B00000,
   B00000,
   B00000,
@@ -72,57 +88,86 @@ byte f[8]={
   B01110
 };
 
-
+//--------------------------------------Global variables and crap---------------------------------------------------------
 ClickEncoder *encoder;
-int value = 0;
-int last = -1;
-int mode = 1;
+int value = 0;       //For encoder output value
+int last = -1;       //For checking for changes in encoder output value
+int mode = 1;        //Keeping track of what mode we're in, moved to global because it was used in temp function too
 
-int C = 0;
-int B = 0;
+int C = 0;          //Temperature variable (Celsius)
+int B = 0;          //Barometric Pressure variable
 
+LiquidCrystal lcd(7,6,5,4,3,2); 
+//-----------------------------------Interrupt routine for encoder ---------------------------------------------
 void timerIsr(){
   encoder->service();
 }
 
+//--------------------------------------- Setup ----------------------------------------------------------------
 void setup(){
-  lcd.createChar(1,a);
+  
+  lcd.begin(16,2);
+  
+  delay(100);
+  
+  lcd.createChar(1,a);                  //setting up custom characters for big numbers on LCD
   lcd.createChar(2,b);
   lcd.createChar(3,c);
   lcd.createChar(4,d);
   lcd.createChar(5,e);
   lcd.createChar(6,f);
 
-  lcd.begin(16,2);
+  
 
-  Serial.begin(9600);
-
-  encoder = new ClickEncoder(A1,A0,A2,4);
+  
+  
+  //initalize the encoder, see click_encoder library for details
+  encoder = new ClickEncoder(A1,A0,A2,4);  //Enc A, Enc B, Btn, Steps per notch
   Timer1.initialize(1000);
   Timer1.attachInterrupt(timerIsr);
-
+  
+  //For testing loop cycle time (see next section)
+  pinMode(13, OUTPUT);
+  
 }
 
 
+//------------------------------------------- Main Loop -------------------------------------------------------
 
 void loop(){
-
+  
+  //Threw this in to see how long each mode would take (by using a scope on pin 13)
+  boolean flip = !flip;
+  digitalWrite(13, flip);
+  
+  
+  
   ClickEncoder::Button b = encoder->getButton();
-  if(b == ClickEncoder::Held && mode != 1){
+  if(b == ClickEncoder::Held && mode != 1){      //Holding button down enables you to go back into the temp & press modes
     mode = 1;
     lcd.clear();
   }
-  
-  if(b == ClickEncoder::Clicked){
+  else if(b == ClickEncoder::Clicked){                //Clicking button cycles to next page (mode)
     mode = mode++;
-    if(mode > 8){
-      mode = 3;
+    if(mode > 8){                                     //Once you get to the end, you wrap back to ground idle,
+      mode = 3;            // skip the initial setup (temp and press) since you probably dont need to edit during the run
+    }                      // you could always go back into the setup by holding button (see code a few lines up)
+    lcd.clear();
+  }
+  
+  else if(b == ClickEncoder::DoubleClicked && (mode > 2)){
+    mode--;                                    //Double Clicking steps backwards through the modes, but only when out of setup
+    if(mode < 3){
+      mode = 8;
     }
     lcd.clear();
   }
   
-  //Serial.print(menu);
-  switch(mode){
+  if(mode == 2){encoder->setAccelerationEnabled(1);}  //use acceleration if in the baro menu because it deals with large values
+  else{encoder->setAccelerationEnabled(0);}
+  
+  
+  switch(mode){                                  //Set the approprate mode
   case 1:
     getTemp();
     break;
@@ -151,36 +196,49 @@ void loop(){
 }
 
 
+//-------------------------------------------Set Temperature---------------------------------------------------
+//provides input method for temperature setting. Holding button changes from C to F, and the current value changes
+//along with it
+
 
 void getTemp(){
-  static int tempSet = 20;
+  static int tempSet = 20;  //Default temperature is a nice 20 degrees
   static int oldTemp = 0;
-  static boolean CF;
-  static byte chg;
-  static boolean btn_chg;
+  static boolean CF;        //Tracking whether working with Celsius or Fahrenheit 
+  static boolean btn_chg;  //Tracking mode switches
   
-  lcd.home();
-  lcd.print("Temperature");
-  ClickEncoder::Button b = encoder->getButton();
-
-  if(b == ClickEncoder::Held && btn_chg == 0){
-    CF = !CF;
+  ClickEncoder::Button b = encoder->getButton();      //Watch for button clicks
+  
+  if(b == ClickEncoder::Clicked){                     //Normally the main loop catches the "clicked" state,   
+    lcd.clear();                                      //but with all the crap going on in here, it was often missed.
+    mode++;                                           //...so this makes up for that.
+    return;
+    }
+    
+  else if(b == ClickEncoder::Held && btn_chg == 0){   //If the button just now went to "held", 
+    CF = !CF;                                          // Change between degrees C or F
     btn_chg = 1;
     if(CF == 1){
-      tempSet = (tempSet*9/5)+32;
+      tempSet = (tempSet*9/5)+32;                     //Convert to new unit when switching mode
       }
     if(CF == 0){
       tempSet = (tempSet-32)*5/9;
       }
   }
-  if(b == ClickEncoder::Released && btn_chg == 1){btn_chg = 0;}
-
-  if(CF == 0){
+  
+  if(b == ClickEncoder::Released && btn_chg == 1){      //Watch for end of button "hold" to reset the state
+    btn_chg = 0;
+    }
+  
+  lcd.home();
+  lcd.print("Temperature");
+  
+  if(CF == 0){                                         //Run this display if the temperature is in Celsius
     lcd.print(" <C>");
     lcd.setCursor(7,1);
     lcd.print(tempSet);
     tempSet += encoder->getValue();
-    tempSet = constrain(tempSet, -50, 65);
+    tempSet = constrain(tempSet, -50, 65);            //Constrain to a reasonable temperature limit
     if(tempSet != oldTemp){
       lcd.setCursor(7,1);
       lcd.print("     ");
@@ -191,7 +249,7 @@ void getTemp(){
     C = tempSet;
   }
 
-  if(CF == 1){
+  if(CF == 1){                                          //This mode for Fahrenheit
     lcd.print(" <F>");
     lcd.setCursor(7,1);
     lcd.print(tempSet);
@@ -204,37 +262,44 @@ void getTemp(){
       lcd.print(tempSet);
       oldTemp = tempSet;
     }
-    C = (tempSet-32)*5/9;
+    C = (tempSet-32)*5/9;                                //gotta make sure to always use C for internal math
   }
 }
 
+
+//-------------------------------------------------Set Barometric Pressure--------------------------------------
 void getPress(){
-  static float pressSet = 2992;
+  static float pressSet = 2992;      //starting value is at standard pressure, note it's 100x the real value                   
   static float oldPress = 0;
+  
   lcd.home();
-  lcd.print("Baro Press:");
-  lcd.setCursor(0,1);
+  lcd.print("  Baro Press:");
+  lcd.setCursor(3,1);
   
   lcd.print(pressSet/100);
+  lcd.print(" inHg");
   pressSet += encoder->getValue();
+  pressSet = constrain(pressSet, 2400, 3400);  //make sure it stays in a reasonable range
   if(pressSet != oldPress){
-    lcd.setCursor(0,1);
-    lcd.print("     ");
-    lcd.setCursor(0,1);
+    lcd.setCursor(3,1);
+    lcd.print("        ");
+    lcd.setCursor(3,1);
     
     lcd.print(pressSet/100);
+    lcd.print(" inHg");
     oldPress = pressSet;
   }
-  B=pressSet;
+  B=pressSet/100;                          //set the baro press, and make sure it's in the real units.
 }
 
-
+//----------------------------------------------Ground Idle--------------------------------------------
 
 void ground_idle(){
 
-float low = 54+(C/10);
+float low = 54+(C/10);                            //Get the values for the min/max ground idle
 float high = 56+((C+8)/10);  
-if(C < 0){
+
+if(C < 0){                                        //Stop where the RPM bottoms out
   low = 54.0;
 }
 if(C < -8){
@@ -248,8 +313,8 @@ if(C < -8){
   lcd.print(high,1);
  }
 
-
-void flight_idle_2(){
+//--------------------------------------Flight Idle N2-----------------------------------------------
+void flight_idle_2(){                      
   lcd.home();
   float low = 74.5+0.13*C;
   float high = 76.8+0.13*C;
@@ -259,8 +324,9 @@ void flight_idle_2(){
   lcd.print(" - ");
   lcd.print(high,1);
 }
-  
-void flight_idle_1(){
+
+//-------------------------------------Flight Idle N1------------------------------------------------ 
+void flight_idle_1(){                       
   lcd.home();
  float low = 32+0.048*C;
   float high = 39.2+0.06*C;
@@ -271,29 +337,31 @@ void flight_idle_1(){
   lcd.print(high,1); 
 }
 
+//-------------------------------Max Power Assurance Setting - Big Numbers ----------------------------
 void mpa(){
   lcd.home();
   float mpa = 79.9+0.144*C;
-  mpa = mpa * 10;
+  mpa = mpa * 10;            //Only send integers to the print_big function, it doesn't work with floats (yet)
   mpa = int(mpa);
   lcd.print("MPA");
   print_big(mpa);
 }
 
+//-------------------------------PMC Check Setting - Big Numbers ----------------------------
 void pmc(){
   lcd.home();
-  float pmc = 79.9+0.14*C;
-  pmc = pmc * 10;
+  float pmc = 77.9+0.14*C;
+  pmc = pmc * 10;            //Only send integers to the print_big function, it doesn't work with floats (yet)
   pmc = int(pmc);
   lcd.print("PMC");
   print_big(pmc);
 }
 
+//-------------------------------Takeoff Rated Thrust Setting - Big Numbers ----------------------------
 void trt(){
   float trt = 83.75+0.1625*C;
-  float baro = 3200 - B;
-  baro = baro/100;
-  if(baro <= 2.0){
+  float baro = 32.0 - B;                //TRT is the only parameter to use baro
+  if(baro <= 2.0){                    
     trt = trt + baro;
   }
   if(baro > 2.0){
@@ -301,35 +369,47 @@ void trt(){
   }
   float limit = 96.2-0.17*C;
   trt = min(trt,limit);
-  trt = trt * 10;
+  trt = trt * 10;            //Only send integers to the print_big function, it doesn't work with floats (yet)
   trt = int(trt);
   lcd.home();
   lcd.print("TRT");
   print_big(trt);
 }
 
+
+
+
+//------------------------------ How to write big numbers on the LCD ------------------------------------
+
 void print_big(int x){ //number to print (from 1-999), and to put decimal or not
 
-
+  // This function can only handle integers between 0-999. 
+  // Not really a problem since the calculator outputs always fall in range(when multiplied by 10)
+  // At the end we add a decimal point between the ones and tens, which will undo the RPM*10 trick 
+  
   int first = (x/100)%10;     //Get the hundreds digit
   int second = (x/10)%10;     //Get the tens
   int third = (x%10);         //Get the ones
 
-    bigNum(first,1); 
+    bigNum(first,1);          //Write the values in the appropriate places
   
     bigNum(second,2); 
 
     bigNum(third,3);
  
-    lcd.setCursor(11,1);
+    lcd.setCursor(11,1);     //Put a decimal point between the ones and tens 
     lcd.write(6);
   }
 
 
-
-void bigNum(int x, int p){
-
-  int top[]={
+void bigNum(int x, int p){ 
+   //Uses custom characters to form a big numerical digit (3 by 2 LCD characters)
+   //Takes a value between 0-9 and a horizonal position between 0-4 (end to end on a 16x2 LCD)
+   
+  //These two arrays have the values for the custom characters that make up the segments of the big number
+  //Each big digit is 3 characters wide, so every 3rd index is the next number. 
+  //Array is padded with a zero to keep from having to use the zero index
+  int top[]={      //top row
     0,
     1,4,5,  // 1
     1,3,4,  // 2
@@ -343,7 +423,7 @@ void bigNum(int x, int p){
     4,1,4   // 0
   };
 
-  int bottom[]={
+  int bottom[]={  //bottom row
     0,
     2,4,2,  // 1
     4,2,2,  // 2
@@ -361,16 +441,16 @@ void bigNum(int x, int p){
 
 
   lcd.home();
-  lcd.setCursor(p+(p*3),0); //set digit horizontal position, add in a space for every nth digit
-  for(int y=0; y < 3; y++){ //grabs the 3 characters needed to form a row for the big digit
-    if(x > 9 || x < 1){ 
-      lcd.write(top[28+y]); 
-    } //write a zero if number to be written != 1-9
-    else
-      lcd.write(top[y+((x*3)-2)]); //pick the right characters from the array
-  }
+  lcd.setCursor(p+(p*3),0); //set the digits horizontal starting position, add in a space for every nth digit
+  for(int y=0; y < 3; y++){ //need to get 3 characters from the array that will form the top half of the big digit
+    if(x > 9 || x < 1){     //Make sure we're only working with a number between 1 and 9
+      lcd.write(top[28+y]); //If it is out of range, print a zero. conveniently, a zero will be printed as zero....
+    } 
+    else                      
+      lcd.write(top[y+((x*3)-2)]); //start at the right position in the array. If we want to print the number 3
+  }                                //then we need to start at index 7, and then print indexes 8 and 9 also.
 
-  //bottom row of digit
+  //bottom row of digit, pretty much the same as above except writing to bottom row and grabbing char's from bottom array
   lcd.setCursor(p+(p*3),1); //add in additional room for position
   for(int y=0; y < 3; y++){ //need to grab next sequence in array
     if(x > 9 || x < 1){ 
